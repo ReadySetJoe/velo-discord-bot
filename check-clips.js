@@ -5,7 +5,10 @@ const fs = require("fs");
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
-const TWITCH_BROADCASTER_NAME = process.env.TWITCH_BROADCASTER_NAME;
+// Support multiple broadcasters separated by commas
+const TWITCH_BROADCASTER_NAMES = process.env.TWITCH_BROADCASTER_NAMES.split(
+  ","
+).map(name => name.trim());
 
 // File to store posted clip IDs
 const POSTED_CLIPS_FILE = "posted_clips.json";
@@ -50,7 +53,7 @@ async function getTwitchAccessToken() {
 }
 
 // Get broadcaster ID from username
-async function getBroadcasterId(accessToken) {
+async function getBroadcasterId(accessToken, broadcasterName) {
   try {
     const response = await axios.get("https://api.twitch.tv/helix/users", {
       headers: {
@@ -58,7 +61,7 @@ async function getBroadcasterId(accessToken) {
         Authorization: `Bearer ${accessToken}`,
       },
       params: {
-        login: TWITCH_BROADCASTER_NAME,
+        login: broadcasterName,
       },
     });
 
@@ -66,17 +69,27 @@ async function getBroadcasterId(accessToken) {
       console.log(
         `✅ Found broadcaster: ${response.data.data[0].display_name}`
       );
-      return response.data.data[0].id;
+      return {
+        id: response.data.data[0].id,
+        displayName: response.data.data[0].display_name,
+      };
     }
     return null;
   } catch (error) {
-    console.error("❌ Error getting broadcaster ID:", error.message);
+    console.error(
+      `❌ Error getting broadcaster ID for ${broadcasterName}:`,
+      error.message
+    );
     return null;
   }
 }
 
 // Fetch recent clips from Twitch
-async function fetchRecentClips(accessToken, broadcasterId) {
+async function fetchRecentClips(
+  accessToken,
+  broadcasterId,
+  broadcasterDisplayName
+) {
   try {
     // Get clips from the last 24 hours
     // const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -94,11 +107,19 @@ async function fetchRecentClips(accessToken, broadcasterId) {
     });
 
     console.log(
-      `📹 Found ${response.data.data.length} total clips in the last 24 hours`
+      `📹 Found ${response.data.data.length} total clips from ${broadcasterDisplayName} in the last 24 hours`
     );
-    return response.data.data;
+
+    // Add broadcaster info to each clip
+    return response.data.data.map(clip => ({
+      ...clip,
+      broadcasterDisplayName: broadcasterDisplayName,
+    }));
   } catch (error) {
-    console.error("❌ Error fetching clips:", error.message);
+    console.error(
+      `❌ Error fetching clips for ${broadcasterDisplayName}:`,
+      error.message
+    );
     return [];
   }
 }
@@ -111,7 +132,7 @@ async function postClipToDiscord(clip) {
       title: clip.title,
       url: clip.url,
       author: {
-        name: `Clipped by ${clip.creator_name}`,
+        name: `${clip.broadcasterDisplayName} - Clipped by ${clip.creator_name}`,
       },
       description: `👁️ ${clip.view_count.toLocaleString()} views`,
       thumbnail: {
@@ -124,11 +145,13 @@ async function postClipToDiscord(clip) {
     };
 
     await axios.post(DISCORD_WEBHOOK_URL, {
-      content: `🎬 **New clip from ${TWITCH_BROADCASTER_NAME}!**\n${clip.url}`,
+      content: `🎬 **New clip from ${clip.broadcasterDisplayName}!**\n${clip.url}`,
       embeds: [embed],
     });
 
-    console.log(`✅ Posted clip: ${clip.title}`);
+    console.log(
+      `✅ Posted clip from ${clip.broadcasterDisplayName}: ${clip.title}`
+    );
 
     // Mark clip as posted
     postedClips.add(clip.id);
@@ -145,14 +168,14 @@ async function postClipToDiscord(clip) {
 // Main function
 async function main() {
   console.log("🔍 Starting Twitch clip checker...");
-  console.log(`📺 Channel: ${TWITCH_BROADCASTER_NAME}`);
+  console.log(`📺 Channels: ${TWITCH_BROADCASTER_NAMES.join(", ")}`);
 
   // Validate environment variables
   if (
     !DISCORD_WEBHOOK_URL ||
     !TWITCH_CLIENT_ID ||
     !TWITCH_CLIENT_SECRET ||
-    !TWITCH_BROADCASTER_NAME
+    !TWITCH_BROADCASTER_NAMES
   ) {
     console.error("❌ Missing required environment variables");
     process.exit(1);
@@ -162,31 +185,52 @@ async function main() {
     // Get Twitch access token
     const accessToken = await getTwitchAccessToken();
 
-    // Get broadcaster ID
-    const broadcasterId = await getBroadcasterId(accessToken);
-    if (!broadcasterId) {
-      console.error("❌ Could not find broadcaster ID");
-      process.exit(1);
+    let allNewClips = [];
+
+    // Check each broadcaster
+    for (const broadcasterName of TWITCH_BROADCASTER_NAMES) {
+      console.log(`\n📺 Checking ${broadcasterName}...`);
+
+      // Get broadcaster ID
+      const broadcasterInfo = await getBroadcasterId(
+        accessToken,
+        broadcasterName
+      );
+      if (!broadcasterInfo) {
+        console.error(`❌ Could not find broadcaster: ${broadcasterName}`);
+        continue;
+      }
+
+      // Fetch recent clips
+      const clips = await fetchRecentClips(
+        accessToken,
+        broadcasterInfo.id,
+        broadcasterInfo.displayName
+      );
+
+      // Filter out already posted clips
+      const newClips = clips.filter(clip => !postedClips.has(clip.id));
+
+      if (newClips.length > 0) {
+        console.log(
+          `📌 Found ${newClips.length} new clip(s) from ${broadcasterInfo.displayName}`
+        );
+        allNewClips.push(...newClips);
+      }
     }
 
-    // Fetch recent clips
-    const clips = await fetchRecentClips(accessToken, broadcasterId);
-
-    // Filter out already posted clips
-    const newClips = clips.filter(clip => !postedClips.has(clip.id));
-
-    if (newClips.length === 0) {
-      console.log("✅ No new clips found");
+    if (allNewClips.length === 0) {
+      console.log("\n✅ No new clips found from any broadcaster");
       return;
     }
 
-    console.log(`📌 Found ${newClips.length} new clip(s) to post`);
+    console.log(`\n🎉 Total new clips to post: ${allNewClips.length}`);
 
     // Sort clips by creation date (oldest first)
-    newClips.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    allNewClips.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
     // Post each new clip
-    for (const clip of newClips) {
+    for (const clip of allNewClips) {
       await postClipToDiscord(clip);
     }
 
