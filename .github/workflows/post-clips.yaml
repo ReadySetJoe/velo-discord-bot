@@ -30,11 +30,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download posted clips history
-        uses: actions/download-artifact@v4
+      - name: Restore posted clips history from cache
+        id: cache-clips
+        uses: actions/cache/restore@v4
         with:
-          name: posted-clips
-        continue-on-error: true
+          path: posted_clips.json
+          key: posted-clips-cache
+          restore-keys: |
+            posted-clips-cache
 
       - name: Run clip checker
         env:
@@ -44,10 +47,9 @@ jobs:
           TWITCH_BROADCASTER_NAMES: ${{ secrets.TWITCH_BROADCASTER_NAMES }}
         run: node check-clips.js
 
-      - name: Upload posted clips history
-        uses: actions/upload-artifact@v4
+      - name: Save posted clips history to cache
+        uses: actions/cache/save@v4
         with:
-          name: posted-clips
           path: posted_clips.json
-          retention-days: 90
+          key: posted-clips-cache-${{ github.run_id }}
         if: always()
