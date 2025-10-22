@@ -92,7 +92,7 @@ async function fetchRecentClips(
 ) {
   try {
     // Get clips from the last 24 hours
-    // const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
     const response = await axios.get("https://api.twitch.tv/helix/clips", {
       headers: {
@@ -101,7 +101,7 @@ async function fetchRecentClips(
       },
       params: {
         broadcaster_id: broadcasterId,
-        // started_at: oneDayAgo,
+        started_at: oneDayAgo,
         first: 20,
       },
     });
