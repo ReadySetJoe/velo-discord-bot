@@ -34,7 +34,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: posted-clips
-          path: .
         continue-on-error: true
 
       - name: Run clip checker
